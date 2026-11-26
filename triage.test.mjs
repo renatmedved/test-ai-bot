@@ -4,7 +4,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { createTriageServer } from "./server.mjs";
 
-test("POST /api/triage — валидация заявки", async (t) => {
+test("POST /api/triage", async (t) => {
   const server = createTriageServer();
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -40,11 +40,29 @@ test("POST /api/triage — валидация заявки", async (t) => {
     });
   }
 
-  await t.test("корректная заявка после ошибок ввода", async () => {
-    const response = await post(JSON.stringify({ text: " Когда доставка? " }));
-    assert.equal(response.status, 200);
-    const result = await response.json();
-    assert.equal(result.status, "ready");
-    assert.equal(result.topic, "delivery");
-  });
+  for (const marker of ["[error]", "[bad-json]", "[bad-topic]", "[empty-draft]", "[timeout]"]) {
+    // Имитатор задерживает [timeout] на 1200 мс. Оставляем запас на HTTP поверх лимита модели.
+    await t.test(`сбой модели ${marker}`, { timeout: 1000 }, async () => {
+      const response = await post(JSON.stringify({ text: marker }));
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { status: "manual_review", topic: null, draft: null });
+    });
+  }
+
+  const readyCases = [
+    [" Когда доставка? ", "delivery"],
+    ["Какая цена?", "pricing"],
+    ["Спасибо за помощь", "other"],
+  ];
+  for (const [text, topic] of readyCases) {
+    await t.test(`корректная заявка с темой ${topic}`, async () => {
+      const response = await post(JSON.stringify({ text }));
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        status: "ready",
+        topic,
+        draft: "Спасибо за обращение. Уточним детали заявки.",
+      });
+    });
+  }
 });
