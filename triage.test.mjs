@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
 import { createTriageServer } from "./server.mjs";
 
 test("POST /api/triage", async (t) => {
@@ -65,4 +66,36 @@ test("POST /api/triage", async (t) => {
       });
     });
   }
+
+  await t.test("страница очищает готовый черновик при сбое модели", async () => {
+    const html = await (await fetch(new URL("/", url))).text();
+    const script = html.match(/<script type="module">([\s\S]*?)<\/script>/);
+    assert.ok(script, "На странице должен быть обработчик формы");
+
+    let submit;
+    const button = { disabled: false };
+    const form = {
+      querySelector: (selector) => selector === "button" ? button : null,
+      addEventListener(event, handler) {
+        if (event === "submit") submit = handler;
+      },
+    };
+    const message = { value: "Когда доставка?" };
+    const result = { textContent: "" };
+    const elements = { form, "#message": message, "#result": result };
+    runInNewContext(script[1], {
+      document: { querySelector: (selector) => elements[selector] },
+      fetch: (path, options) => fetch(new URL(path, url), options),
+    });
+
+    const event = { preventDefault() {} };
+    await submit(event);
+    assert.match(result.textContent, /Тема: Доставка/);
+    assert.match(result.textContent, /Черновик ответа:\s*Спасибо за обращение/);
+
+    message.value = "[error]";
+    await submit(event);
+    assert.equal(result.textContent, "Проверьте заявку вручную и подготовьте ответ клиенту.");
+    assert.equal(button.disabled, false);
+  });
 });
